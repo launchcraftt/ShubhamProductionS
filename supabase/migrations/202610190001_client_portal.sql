@@ -264,3 +264,32 @@ create policy "project members read gallery objects" on storage.objects for sele
 create policy "admin uploads gallery objects" on storage.objects for insert to authenticated with check(bucket_id='private-gallery' and public.is_portal_admin() and public.can_access_project((storage.foldername(name))[1]::uuid));
 create policy "admin updates gallery objects" on storage.objects for update to authenticated using(bucket_id='private-gallery' and public.is_portal_admin() and public.can_access_project((storage.foldername(name))[1]::uuid)) with check(bucket_id='private-gallery' and public.is_portal_admin() and public.can_access_project((storage.foldername(name))[1]::uuid));
 create policy "admin deletes gallery objects" on storage.objects for delete to authenticated using(bucket_id='private-gallery' and public.is_portal_admin() and public.can_access_project((storage.foldername(name))[1]::uuid));
+
+
+
+-- new
+-- Self-signup support: when a user registers, link them to every project whose client_email matches.
+-- Run this once in the Supabase SQL Editor (after 202610190001_client_portal.sql).
+
+create or replace function public.handle_new_user() returns trigger language plpgsql security definer set search_path=public as $$
+begin
+  insert into public.profiles(id,email,full_name)
+  values(new.id,lower(new.email),coalesce(new.raw_user_meta_data->>'full_name',''))
+  on conflict(id) do update set email=excluded.email;
+
+  insert into public.project_members(project_id,user_id,email,role)
+  select p.id,new.id,lower(new.email),'client'
+  from public.projects p
+  where lower(trim(p.client_email))=lower(trim(new.email))
+  on conflict(project_id,user_id) do nothing;
+
+  return new;
+end; $$;
+
+-- Link existing accounts to matching projects too (one-time backfill).
+insert into public.project_members(project_id,user_id,email,role)
+select p.id,pr.id,pr.email,'client'
+from public.projects p
+join public.profiles pr on lower(trim(pr.email))=lower(trim(p.client_email))
+where pr.role='client'
+on conflict(project_id,user_id) do nothing;
